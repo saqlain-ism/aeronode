@@ -1,0 +1,133 @@
+name: aeronode
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  mosquitto:
+    <<: *restart
+    image: eclipse-mosquitto:2.0.20
+    ports: ["1883:1883"]
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/broker/uptime", "-C", "1", "-W", "3"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  influxdb:
+    <<: *restart
+    image: influxdb:2.7
+    ports: ["8086:8086"]
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUX_ADMIN_USER}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUX_ADMIN_PASSWORD}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUX_ORG}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUX_BUCKET}
+      DOCKER_INFLUXDB_INIT_RETENTION: ${INFLUX_RETENTION}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUX_TOKEN}
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  grafana:
+    <<: *restart
+    image: grafana/grafana:11.3.0
+    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/aeronode.json
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      INFLUX_ORG: ${INFLUX_ORG}
+      INFLUX_BUCKET: ${INFLUX_BUCKET}
+      INFLUX_TOKEN: ${INFLUX_TOKEN}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      influxdb: { condition: service_healthy }
+
+  # One-shot: imports and activates the alert workflow before n8n starts.
+  n8n-init:
+    image: n8nio/n8n:1.72.1
+    user: node
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        n8n import:workflow --input=/workflows/aeronode-alerts.json &&
+        n8n update:workflow --id=AeroNodeAlerts01 --active=true
+    environment: &n8n-env
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      GENERIC_TIMEZONE: ${TZ}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+    volumes:
+      - ./n8n/workflows:/workflows:ro
+      - n8n-data:/home/node/.n8n
+
+  n8n:
+    <<: *restart
+    image: n8nio/n8n:1.72.1
+    ports: ["5678:5678"]
+    environment: *n8n-env
+    volumes:
+      - n8n-data:/home/node/.n8n
+    depends_on:
+      n8n-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  engine:
+    <<: *restart
+    build: ./engine
+    ports: ["8000:8000"]
+    environment:
+      MQTT_HOST: mosquitto
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_TOKEN: ${INFLUX_TOKEN}
+      INFLUX_ORG: ${INFLUX_ORG}
+      INFLUX_BUCKET: ${INFLUX_BUCKET}
+      N8N_WEBHOOK_URL: http://n8n:5678/webhook/aeronode-events
+      NOTIFY_MIN_SEVERITY: ${NOTIFY_MIN_SEVERITY}
+      RULES_PATH: /app/config/rules.yaml
+      API_KEY: ${API_KEY}
+      LOG_LEVEL: INFO
+    volumes:
+      - ./config:/app/config:ro
+    depends_on:
+      mosquitto: { condition: service_healthy }
+      influxdb: { condition: service_healthy }
+      n8n: { condition: service_started }
+
+  simulator:
+    <<: *restart
+    build: ./simulator
+    environment:
+      MQTT_HOST: mosquitto
+      DRONE_COUNT: ${DRONE_COUNT}
+      TICK_HZ: ${TICK_HZ}
+      HOME_LAT: "17.4474"
+      HOME_LON: "78.3762"
+    depends_on:
+      engine: { condition: service_healthy }
+
+volumes:
+  mosquitto-data:
+  influxdb-data:
+  grafana-data:
+  n8n-data:

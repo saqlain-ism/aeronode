@@ -1,0 +1,98 @@
+{
+  "id": "AeroNodeAlerts01",
+  "name": "AeroNode - Fleet Alerts",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all"
+  },
+  "nodes": [
+    {
+      "id": "0b7c1f0e-1d01-4c55-9d1a-aeb0de000001",
+      "name": "Engine Event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "aeronode-events",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "aeronode-events",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "id": "0b7c1f0e-1d01-4c55-9d1a-aeb0de000002",
+      "name": "Format Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Turn an engine event into a readable alert.\nconst e = $json.body ?? $json;\nconst esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst icon = { critical: '\\u{1F6A8}', warning: '\\u26A0\\uFE0F', info: '\\u2139\\uFE0F' }[e.severity] ?? '\\u2022';\nconst when = new Date((e.ts ?? Date.now() / 1000) * 1000).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';\nconst lines = [\n  `${icon} <b>AeroNode ${esc(String(e.severity).toUpperCase())}</b>`,\n  `<b>Drone:</b> ${esc(e.drone_id)}`,\n  `<b>Event:</b> ${esc(e.type)}`,\n  esc(e.message),\n];\nif (e.action) lines.push(`<b>Action taken:</b> ${esc(e.action)}`);\nlines.push(`<i>${when}</i>`);\nreturn {\n  json: {\n    ...e,\n    text: lines.join('\\n'),\n    telegram_enabled: Boolean($env.TELEGRAM_BOT_TOKEN && $env.TELEGRAM_CHAT_ID),\n  },\n};"
+      }
+    },
+    {
+      "id": "0b7c1f0e-1d01-4c55-9d1a-aeb0de000003",
+      "name": "Telegram configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [480, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "7d4e3c1a-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.telegram_enabled }}",
+              "rightValue": "",
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "0b7c1f0e-1d01-4c55-9d1a-aeb0de000004",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 200],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $env.TELEGRAM_CHAT_ID, text: $json.text, parse_mode: 'HTML', disable_notification: $json.severity !== 'critical' }) }}",
+        "options": { "timeout": 10000 }
+      }
+    },
+    {
+      "id": "0b7c1f0e-1d01-4c55-9d1a-aeb0de000005",
+      "name": "Log Only",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [720, 400],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Engine Event": { "main": [[{ "node": "Format Alert", "type": "main", "index": 0 }]] },
+    "Format Alert": { "main": [[{ "node": "Telegram configured?", "type": "main", "index": 0 }]] },
+    "Telegram configured?": {
+      "main": [
+        [{ "node": "Send Telegram", "type": "main", "index": 0 }],
+        [{ "node": "Log Only", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "pinData": {},
+  "tags": []
+}
