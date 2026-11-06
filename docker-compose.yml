@@ -56,15 +56,19 @@ services:
     depends_on:
       influxdb: { condition: service_healthy }
 
-  # One-shot: imports and activates the alert workflow before n8n starts.
+  # One-shot: best-effort import of the alert workflow before n8n starts.
+  # It always exits 0 (the `|| true` / `exit 0`): alerting is optional, so a
+  # failed import must never block the rest of the stack. If it doesn't import,
+  # load n8n/workflows/aeronode-alerts.json by hand from the n8n UI.
   n8n-init:
     image: n8nio/n8n:1.72.1
     user: node
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >
-        n8n import:workflow --input=/workflows/aeronode-alerts.json &&
-        n8n update:workflow --id=AeroNodeAlerts01 --active=true
+        n8n import:workflow --input=/workflows/aeronode-alerts.json || true;
+        n8n update:workflow --id=AeroNodeAlerts01 --active=true || true;
+        exit 0
     environment: &n8n-env
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
@@ -109,10 +113,12 @@ services:
       LOG_LEVEL: INFO
     volumes:
       - ./config:/app/config:ro
+    # Only the message bus and the database are required. n8n (alerting) is
+    # intentionally NOT a dependency: the engine's notifier is non-blocking and
+    # retries, so the fleet stays protected even if alerting is down.
     depends_on:
       mosquitto: { condition: service_healthy }
       influxdb: { condition: service_healthy }
-      n8n: { condition: service_started }
 
   simulator:
     <<: *restart

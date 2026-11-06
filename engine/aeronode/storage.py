@@ -42,13 +42,20 @@ class Storage:
     def enabled(self) -> bool:
         return self._write is not None
 
-    def _ok(self, conf, data: str) -> None:
-        with self._lock:
-            self.written += data.count("\n") + 1
+    @staticmethod
+    def _count_points(data) -> int:
+        """Lines in a write batch. The client hands `data` back as bytes, so
+        count a bytes newline (counting a str newline raises TypeError)."""
+        newline = b"\n" if isinstance(data, (bytes, bytearray)) else "\n"
+        return data.count(newline) + 1
 
-    def _err(self, conf, data: str, exc: Exception) -> None:
+    def _ok(self, conf, data) -> None:
         with self._lock:
-            self.failed += data.count("\n") + 1
+            self.written += self._count_points(data)
+
+    def _err(self, conf, data, exc: Exception) -> None:
+        with self._lock:
+            self.failed += self._count_points(data)
         log.warning("influx write failed: %s", exc)
 
     def healthy(self) -> bool:
